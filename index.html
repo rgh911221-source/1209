@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DPPH 抗自由基試紙分析儀 (含CSV匯出)</title>
+    <!-- 載入 Tailwind CSS 框架 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 設置 Inter 字體 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7;
+        }
+        /* 表格與輸入欄位樣式 */
+        th, td {
+            padding: 8px 12px;
+            text-align: center;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th {
+            background-color: #1f2937;
+            color: white;
+            font-size: 0.9rem;
+        }
+        /* 輸入欄位通用樣式 */
+        .input-field {
+            width: 100%;
+            padding: 4px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            text-align: center;
+            appearance: none; /* 移除數字欄位的預設箭頭 */
+            -moz-appearance: textfield;
+        }
+        .input-field:focus {
+            border-color: #3b82f6;
+            outline: none;
+            box-shadow: 0 0 0 1px #3b82f6;
+        }
+        .text-left-input {
+            text-align: left;
+            padding-left: 0.5rem;
+        }
+        /* 讓表格在小螢幕上可以滾動 */
+        .table-responsive {
+            overflow-x: auto;
+        }
+        /* 樣式調整: 確保 Delete 鈕有足夠空間 */
+        .action-cell {
+            width: 80px;
+            padding: 0 4px;
+        }
+        /* 公式區塊的數學符號樣式 */
+        .formula-box {
+            background-color: #f3f4f6;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Times New Roman', serif;
+            font-size: 1.1rem;
+            overflow-x: auto;
+        }
+    </style>
+    <script>
+        // 定義所有組別及其預設值
+        const INITIAL_GROUP_DEFS = [
+            { key: 'Blank1', name: "空白試紙 1 (背景)", L: 49.8, a: -1.6, b: 3.2, type: 'Blank' },
+            { key: 'Blank2', name: "空白試紙 2 (背景)", L: 49.8, a: -1.6, b: 3.2, type: 'Blank' },
+            { key: 'DPPH_Ctrl', name: "DPPH 紫色組 (0% 清除)", L: 45.8, a: 2.3, b: 0.8, type: 'Control' },
+            { key: 'VitC_100', name: "維生素C對照組 (100% 清除)", L: 37.6, a: 2.3, b: 5.4, type: 'Control' },
+            { key: 'Sample_0005', name: "樣品 A 0.005 mg/mL", L: 44.3, a: 2.8, b: 2.3, type: 'Sample' },
+            { key: 'Sample_001', name: "樣品 A 0.01 mg/mL", L: 41.8, a: 2.6, b: 4.1, type: 'Sample' },
+            { key: 'Sample_002', name: "樣品 A 0.02 mg/mL", L: 40.0, a: 3.7, b: 3.9, type: 'Sample' },
+            { key: 'Sample_005', name: "樣品 A 0.05 mg/mL", L: 38.5, a: 2.4, b: 6.7, type: 'Sample' },
+            { key: 'Sample_01', name: "樣品 A 0.1 mg/mL", L: 37.8, a: 2.4, b: 6.4, type: 'Sample' },
+        ];
+
+        // 全域狀態：儲存當前的組別數據，用於動態增刪
+        let currentGroups = [];
+        let sampleCounter = 0; 
+        
+        // 全域狀態：儲存最近一次分析的結果，用於 CSV 匯出
+        let finalAnalysisResults = {}; 
+        let blankAverageData = {};
+        
+        // 核心計算函數：計算 CIE L*a*b* 之間的色差 (Delta E)
+        function calculateDeltaE(lab1, lab2) {
+            const dL = lab2.L - lab1.L;
+            const da = lab2.a - lab1.a;
+            const db = lab2.b - lab1.b;
+            return Math.sqrt(dL * dL + da * da + db * db);
+        }
+
+        // 讀取輸入欄位的數據
+        function collectData() {
+            const collectedData = {};
+            let hasError = false;
+
+            // 遍歷當前組別，從 DOM 讀取數據
+            currentGroups.forEach(groupDef => {
+                const key = groupDef.key;
+                const L_input = document.getElementById(`L-${key}`);
+                const a_input = document.getElementById(`a-${key}`);
+                const b_input = document.getElementById(`b-${key}`);
+                const name_input = document.getElementById(`name-${key}`);
+                
+                // 檢查元素是否存在 (因為動態增刪)
+                if (!L_input) return;
+
+                const L = parseFloat(L_input.value);
+                const a = parseFloat(a_input.value);
+                const b = parseFloat(b_input.value);
+                const name = name_input.value.trim();
+
+                // 簡易輸入驗證
+                const inputs = [L_input, a_input, b_input];
+                if (isNaN(L) || isNaN(a) || isNaN(b) || name === "") {
+                    // 將無效的欄位標記為紅色
+                    inputs.forEach(input => {
+                        if (isNaN(parseFloat(input.value))) {
+                            input.style.borderColor = 'red';
+                        } else {
+                            input.style.borderColor = '#ccc';
+                        }
+                    });
+                    if (name === "") name_input.style.borderColor = 'red';
+                    hasError = true;
+                    return; // 跳過此組
+                }
+                
+                // 移除可能的錯誤標記
+                [...inputs, name_input].forEach(input => input.style.borderColor = '#ccc');
+
+                collectedData[key] = { L, a, b, name };
+                
+                // 更新 currentGroups 中的名稱，以便下次渲染時保留使用者輸入的名稱
+                groupDef.name = name; 
+            });
+
+            if (hasError) {
+                document.getElementById('analysisMessage').textContent = '⚠️ 請檢查所有 L, a*, b* 欄位，確保輸入為有效數字！';
+                document.getElementById('analysisMessage').classList.replace('text-green-600', 'text-red-600');
+                return null;
+            }
+            
+            document.getElementById('analysisMessage').textContent = '✅ 數據讀取成功，正在執行分析...';
+            document.getElementById('analysisMessage').classList.replace('text-red-600', 'text-green-600');
+            return collectedData;
+        }
+
+        function runAnalysis() {
+            const data = collectData(); // 讀取數據
+
+            if (!data) return; // 如果數據有誤，則停止分析
+
+            // 必須確保關鍵對照組存在於數據中
+            if (!data.Blank1 || !data.Blank2 || !data.DPPH_Ctrl || !data.VitC_100) {
+                 document.getElementById('analysisMessage').textContent = '🛑 警告: 缺少空白組或標準對照組數據，無法進行校正分析！';
+                 document.getElementById('analysisMessage').classList.replace('text-green-600', 'text-red-600');
+                 // 清空結果並停止
+                 finalAnalysisResults = {};
+                 blankAverageData = {};
+                 displayResults(null, 0, 0, null);
+                 return;
+            }
+
+            const results = {};
+            const DPPH_Ctrl = data.DPPH_Ctrl;
+
+            // 1. 計算空白試紙平均值 (作為白色背景參考)
+            const L_avg = (data.Blank1.L + data.Blank2.L) / 2;
+            const a_avg = (data.Blank1.a + data.Blank2.a) / 2;
+            const b_avg = (data.Blank1.b + data.Blank2.b) / 2;
+            const Blank_Avg = { L: L_avg, a: a_avg, b: b_avg, name: "空白試紙平均值" };
+
+            // 2. 計算校正基準 Delta E (空白平均值 vs DPPH 紫色組)
+            const deltaE_Blank_Ref = calculateDeltaE(DPPH_Ctrl, Blank_Avg);
+
+            // 3. 遍歷所有組別，進行核心計算
+            for (const key in data) {
+                const group = data[key];
+
+                // 3.1. 計算未校正 Delta E (與 DPPH 紫色組比較)
+                const deltaE_Uncalibrated = calculateDeltaE(DPPH_Ctrl, group);
+
+                // 3.2. 計算校正 Delta E (與 DPPH 紫色組比較，並除以空白校正基準)
+                let deltaE_Calibrated = 0;
+                if (deltaE_Blank_Ref !== 0) {
+                    deltaE_Calibrated = deltaE_Uncalibrated / deltaE_Blank_Ref;
+                }
+
+                results[key] = {
+                    name: group.name,
+                    L: group.L, a: group.a, b: group.b,
+                    deltaE_Uncalibrated: deltaE_Uncalibrated,
+                    deltaE_Calibrated: deltaE_Calibrated,
+                    scavengingRate: 0 
+                };
+            }
+
+            // 4. 計算 100% 清除率基準 (維生素C組)
+            const VitC_Ref_Calibrated_DeltaE = results.VitC_100.deltaE_Calibrated;
+
+            // 5. 計算各組的 DPPH 清除率 (%)
+            for (const key in results) {
+                const groupDef = currentGroups.find(g => g.key === key);
+                // 只有樣品組計算清除率
+                if (groupDef && groupDef.type !== 'Sample') {
+                    results[key].scavengingRate = 'N/A';
+                    continue;
+                }
+                
+                const calibratedDeltaE = results[key].deltaE_Calibrated;
+                let scavengingRate = 0;
+
+                // 確保 100% 基準不為零
+                if (VitC_Ref_Calibrated_DeltaE > 0) {
+                    scavengingRate = (calibratedDeltaE / VitC_Ref_Calibrated_DeltaE) * 100;
+                    if (scavengingRate < 0) scavengingRate = 0;
+                }
+
+                results[key].scavengingRate = scavengingRate.toFixed(2);
+            }
+
+            // 6. 儲存結果到全域變數，並輸出到網頁
+            finalAnalysisResults = results;
+            blankAverageData = {
+                Blank_Avg: Blank_Avg,
+                deltaE_Blank_Ref: deltaE_Blank_Ref,
+                VitC_Ref_Calibrated_DeltaE: VitC_Ref_Calibrated_DeltaE
+            };
+
+            displayResults(results, deltaE_Blank_Ref, VitC_Ref_Calibrated_DeltaE, Blank_Avg);
+        }
+
+        function displayResults(results, deltaE_Blank_Ref, VitC_Ref_Calibrated_DeltaE, Blank_Avg) {
+            const tableBody = document.getElementById('resultsTableBody');
+            const summaryDiv = document.getElementById('summary');
+            tableBody.innerHTML = ''; // 清空舊內容
+            
+            // 處理結果為空的情況 (例如缺少對照組)
+            if (!results || Object.keys(results).length === 0) {
+                 summaryDiv.innerHTML = `<p class="text-center text-red-500 font-bold mb-4">無法計算校正 ΔE 與清除率，因為標準對照組數據不完整。</p>`;
+                 document.getElementById('downloadCsvButton').disabled = true;
+                 return;
+            }
+            
+            document.getElementById('downloadCsvButton').disabled = false;
+
+
+            // 顯示校正基準
+            summaryDiv.innerHTML = `
+                <div class="p-4 bg-yellow-100 text-yellow-800 rounded-lg shadow-md mb-6 md:flex md:space-x-8 justify-center items-center">
+                    <p class="mb-2 md:mb-0 text-sm md:text-base">
+                        <span class="font-semibold">ΔE 校正基準 (空白平均 vs DPPH):</span> 
+                        <span class="text-xl font-mono text-gray-700">${deltaE_Blank_Ref.toFixed(4)}</span>
+                    </p>
+                    <p class="text-sm md:text-base">
+                        <span class="font-semibold">100% 清除率校正 ΔE (維生素C):</span> 
+                        <span class="text-xl font-mono text-gray-700">${VitC_Ref_Calibrated_DeltaE.toFixed(4)}</span>
+                    </p>
+                </div>
+            `;
+
+
+            // 排序結果：空白 -> 對照 -> 樣品
+            const orderedKeys = currentGroups.map(g => g.key);
+
+            // 生成表格行
+            orderedKeys.forEach(key => {
+                const result = finalAnalysisResults[key];
+                
+                // 如果結果集中沒有該 key (不該發生，但作為安全檢查)
+                if (!result) return; 
+
+                const groupDef = currentGroups.find(g => g.key === key);
+                
+                let rowClass = 'bg-white hover:bg-gray-50'; // Default
+                
+                // 依據組別類型設定不同的背景色
+                if (groupDef.type === 'Sample') {
+                    // 樣品組 (Samples): 淺紫色
+                    rowClass = 'bg-indigo-100 hover:bg-indigo-200';
+                } else if (groupDef.type === 'Control') {
+                    // 標準對照組 (DPPH, VitC): 淺青色
+                    rowClass = 'bg-teal-100 hover:bg-teal-200';
+                } else if (groupDef.type === 'Blank') {
+                    // 空白背景組 (Blanks): 淺灰色
+                    rowClass = 'bg-gray-50 hover:bg-gray-100';
+                }
+                
+                // 格式化清除率
+                const scavengingText = result.scavengingRate !== 'N/A'
+                    ? `<span class="${parseFloat(result.scavengingRate) >= 100 ? 'text-purple-600 font-extrabold' : (parseFloat(result.scavengingRate) > 50 ? 'text-green-600 font-bold' : 'text-blue-600')}">${result.scavengingRate} %</span>`
+                    : '—';
+
+                const row = `
+                    <tr class="${rowClass}">
+                        <td class="font-medium text-left">${result.name}</td>
+                        <td>${result.L.toFixed(1)}</td>
+                        <td>${result.a.toFixed(1)}</td>
+                        <td>${result.b.toFixed(1)}</td>
+                        <td class="font-mono text-gray-800">${result.deltaE_Uncalibrated.toFixed(4)}</td>
+                        <td class="font-mono text-gray-800">${result.deltaE_Calibrated.toFixed(4)}</td>
+                        <td>${scavengingText}</td>
+                    </tr>
+                `;
+                tableBody.innerHTML += row;
+            });
+
+            // 加入 Blank_Avg 行
+             tableBody.innerHTML += `
+                <tr class="bg-gray-300 font-bold">
+                    <td class="text-left">${Blank_Avg.name}</td>
+                    <td>${Blank_Avg.L.toFixed(1)}</td>
+                    <td>${Blank_Avg.a.toFixed(1)}</td>
+                    <td>${Blank_Avg.b.toFixed(1)}</td>
+                    <td>${deltaE_Blank_Ref.toFixed(4)}</td>
+                    <td>1.0000 (基準)</td>
+                    <td>—</td>
+                </tr>
+            `;
+
+        }
+        
+        // 渲染輸入表格
+        function createInputTable() {
+            const tableBody = document.getElementById('inputTableBody');
+            tableBody.innerHTML = '';
+
+            currentGroups.forEach(group => {
+                const isSample = group.type === 'Sample';
+                const isStandard = group.type === 'Control';
+                const isBlank = group.type === 'Blank';
+
+                // 顏色區分
+                let rowClass = 'bg-white';
+                if (isSample) {
+                    rowClass = 'bg-indigo-100';
+                } else if (isStandard) {
+                    rowClass = 'bg-teal-100';
+                } else if (isBlank) {
+                    rowClass = 'bg-gray-50';
+                }
+                
+                // 名稱輸入欄位
+                const nameInput = `<input type="text" id="name-${group.key}" value="${group.name}" class="input-field text-left-input">`;
+                
+                // 刪除按鈕
+                const deleteButton = isSample 
+                    ? `<button onclick="deleteGroup('${group.key}')" class="bg-red-500 hover:bg-red-700 text-white text-xs font-bold py-1 px-2 rounded-lg transition duration-150 transform hover:scale-[1.05]">移除</button>`
+                    : `—`; // 非樣品組不允許移除
+
+                const row = `
+                    <tr class="${rowClass}">
+                        <td>${nameInput}</td>
+                        <td><input type="number" step="any" id="L-${group.key}" value="${group.L}" class="input-field"></td>
+                        <td><input type="number" step="any" id="a-${group.key}" value="${group.a}" class="input-field"></td>
+                        <td><input type="number" step="any" id="b-${group.key}" value="${group.b}" class="input-field"></td>
+                        <td class="action-cell">${deleteButton}</td>
+                    </tr>
+                `;
+                tableBody.innerHTML += row;
+            });
+        }
+        
+        // 增加新的樣品組
+        function addSampleGroup() {
+            sampleCounter++;
+            const newKey = `Sample_Dynamic_${sampleCounter}`;
+            const newGroup = { 
+                key: newKey, 
+                name: `新樣品 ${sampleCounter}`, 
+                L: 0.0, a: 0.0, b: 0.0, // 設置初始值，方便使用者修改
+                type: 'Sample' 
+            };
+            
+            // 將新組別添加到樣品組之前
+            const firstSampleIndex = currentGroups.findIndex(g => g.type === 'Sample');
+            if (firstSampleIndex !== -1) {
+                currentGroups.splice(firstSampleIndex, 0, newGroup);
+            } else {
+                currentGroups.push(newGroup);
+            }
+            
+            createInputTable(); // 重新渲染輸入表格
+            
+            // 滾動到新增的欄位
+            document.getElementById(`name-${newKey}`).focus(); 
+        }
+
+        // 刪除樣品組
+        function deleteGroup(key) {
+            // 只允許刪除 Type 為 Sample 的組別 (防止刪除標準對照組)
+            const groupIndex = currentGroups.findIndex(g => g.key === key && g.type === 'Sample');
+            
+            if (groupIndex !== -1) {
+                // 從 currentGroups 中移除
+                currentGroups.splice(groupIndex, 1);
+                
+                // 重新渲染輸入表格
+                createInputTable(); 
+                
+                // 刪除後自動執行一次分析，更新結果
+                runAnalysis(); 
+            }
+        }
+
+        // CSV 匯出函數
+        function exportToCSV() {
+            if (!finalAnalysisResults || Object.keys(finalAnalysisResults).length === 0) {
+                document.getElementById('analysisMessage').textContent = '🛑 警告: 無法匯出，請先點擊「執行分析與計算」獲取結果。';
+                document.getElementById('analysisMessage').classList.replace('text-green-600', 'text-red-600');
+                return;
+            }
+
+            // CSV 標頭
+            let csv = "組別,L,a*,b*,未校正 ΔE,校正 ΔE,DPPH 清除率 (%)\n";
+
+            // 1. 寫入所有實驗數據 (包含空白、對照和樣品)
+            const orderedKeys = currentGroups.map(g => g.key);
+            
+            orderedKeys.forEach(key => {
+                const result = finalAnalysisResults[key];
+                if (result) {
+                    const row = [
+                        `"${result.name.replace(/"/g, '""')}"`, // 處理名稱中的逗號或引號
+                        result.L.toFixed(4),
+                        result.a.toFixed(4),
+                        result.b.toFixed(4),
+                        result.deltaE_Uncalibrated.toFixed(4),
+                        result.deltaE_Calibrated.toFixed(4),
+                        result.scavengingRate === 'N/A' ? 'N/A' : result.scavengingRate,
+                    ].join(',');
+                    csv += row + '\n';
+                }
+            });
+
+            // 2. 寫入計算出的平均值和基準值 (額外行)
+            if (blankAverageData.Blank_Avg) {
+                 const avg = blankAverageData.Blank_Avg;
+                 const avgRow = [
+                    `"${avg.name}"`, 
+                    avg.L.toFixed(4),
+                    avg.a.toFixed(4),
+                    avg.b.toFixed(4),
+                    blankAverageData.deltaE_Blank_Ref.toFixed(4),
+                    '1.0000', // 校正 Delta E 基準值
+                    'N/A',
+                 ].join(',');
+                 csv += avgRow + '\n';
+            }
+            
+            // 3. 寫入摘要基準 (額外行)
+             csv += `\n`;
+             csv += `摘要與基準\n`;
+             csv += `Delta E 校正基準(空白平均 vs DPPH):,${blankAverageData.deltaE_Blank_Ref.toFixed(4)}\n`;
+             csv += `100% 清除率校正 Delta E (維生素C):,${blankAverageData.VitC_Ref_Calibrated_DeltaE.toFixed(4)}\n`;
+
+
+            // 創建 Blob 和下載連結
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const today = new Date().toISOString().slice(0, 10);
+            const filename = `DPPH_Analysis_Report_${today}.csv`;
+
+            if (navigator.msSaveBlob) { // IE 10+
+                navigator.msSaveBlob(blob, filename);
+            } else {
+                const link = document.createElement("a");
+                if (link.download !== undefined) {
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute("href", url);
+                    link.setAttribute("download", filename);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+            }
+            
+            document.getElementById('analysisMessage').textContent = `💾 ${filename} 已成功匯出!`;
+            document.getElementById('analysisMessage').classList.replace('text-red-600', 'text-green-600');
+        }
+
+
+        // 切換公式顯示狀態
+        function toggleFormulas() {
+            const content = document.getElementById('formulaContent');
+            const button = document.getElementById('formulaButton');
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                button.textContent = '隱藏計算公式 (點擊收合) 🔽';
+            } else {
+                content.classList.add('hidden');
+                button.textContent = '顯示計算公式 (點擊展開) 🔼';
+            }
+        }
+
+        // 頁面載入完成後執行
+        window.onload = function() {
+            // 初始化 currentGroups 狀態
+            currentGroups = INITIAL_GROUP_DEFS.slice();
+            // 找到初始樣品組的最大計數
+            INITIAL_GROUP_DEFS.forEach(g => {
+                if (g.key.startsWith('Sample_0')) {
+                    sampleCounter++;
+                }
+            });
+
+            createInputTable(); // 創建輸入表格
+            runAnalysis(); // 預設執行一次分析
+        };
+    </script>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-3xl font-extrabold text-gray-900 mb-2">DPPH 抗自由基試紙分析儀</h1>
+            <p class="text-gray-500">基於 CIE L*a*b* 數據的色差 $(\Delta E)$ 與 DPPH 清除率 (%) 分析</p>
+        </header>
+        
+        <!-- 數據輸入區 -->
+        <section class="mb-8 p-6 bg-white rounded-xl shadow-xl border-t-4 border-blue-500">
+            <h2 class="text-xl font-bold text-blue-700 mb-4">數據輸入 (CIE L*a*b*)</h2>
+            <div class="table-responsive mb-4">
+                <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+                    <thead class="bg-blue-600">
+                        <tr>
+                            <th class="text-left rounded-tl-lg">組別描述 / 樣品濃度 (可編輯)</th>
+                            <th>L</th>
+                            <th>a*</th>
+                            <th>b*</th>
+                            <th class="action-cell rounded-tr-lg">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="inputTableBody" class="bg-white divide-y divide-gray-200">
+                        <!-- Input fields will be inserted here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                <button onclick="addSampleGroup()" class="bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-150 shadow-md transform hover:scale-[1.01]">
+                    ➕ 增加樣品組
+                </button>
+                <button onclick="runAnalysis()" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-150 shadow-md transform hover:scale-[1.01]">
+                    🚀 執行分析與計算
+                </button>
+                <button id="downloadCsvButton" onclick="exportToCSV()" class="bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-150 shadow-md transform hover:scale-[1.01]" disabled>
+                    💾 下載 CSV 檔案
+                </button>
+            </div>
+            <p id="analysisMessage" class="mt-3 text-center text-sm font-medium text-green-600"></p>
+        </section>
+
+        <!-- 數據摘要與校正基準 -->
+        <h2 class="text-2xl font-bold text-gray-800 mb-4 mt-8">分析結果</h2>
+        <div id="summary">
+            <!-- Summary will be inserted here by JavaScript -->
+        </div>
+
+        <section class="mb-8 p-6 bg-white rounded-xl shadow-lg">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">結果詳細列表</h2>
+            <div class="table-responsive">
+                <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+                    <thead class="bg-gray-800">
+                        <tr>
+                            <th class="text-left rounded-tl-lg">組別描述</th>
+                            <th>L</th>
+                            <th>a*</th>
+                            <th>b*</th>
+                            <th>未校正 $\Delta E$</th>
+                            <th>校正 $\Delta E$</th>
+                            <th class="rounded-tr-lg">DPPH 清除率 (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsTableBody" class="bg-white divide-y divide-gray-200">
+                        <!-- Results will be inserted here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        
+        <!-- 計算公式說明區塊 -->
+        <section class="mb-8 p-6 bg-white rounded-xl shadow-lg border-t-4 border-gray-400">
+            <button id="formulaButton" onclick="toggleFormulas()" class="w-full text-left font-bold text-lg text-gray-700 py-2 focus:outline-none">
+                顯示計算公式 (點擊展開) 🔼
+            </button>
+            <div id="formulaContent" class="hidden">
+                <h3 class="text-base font-semibold text-gray-800 mt-2 mb-2">1. CIE L\*a\*b\* 色差 ($\Delta E$)</h3>
+                <p class="text-sm text-gray-600 mb-1">用於定量比較 DPPH 紫色組 ($L_1, a_1, b_1$) 與任一實驗組 ($L_2, a_2, b_2$) 的顏色變化。</p>
+                <div class="formula-box">
+                    $$\Delta E = \sqrt{(L_2 - L_1)^2 + (a_2 - a_1)^2 + (b_2 - b_1)^2}$$
+                </div>
+
+                <h3 class="text-base font-semibold text-gray-800 mt-4 mb-2">2. 校正 $\Delta E$ (Adjusted $\Delta E$)</h3>
+                <p class="text-sm text-gray-600 mb-1">使用 $\Delta E_{\text{空白基準}}$ (空白平均 vs DPPH) 作為除法校正因子，以消除背景干擾。</p>
+                <div class="formula-box">
+                    $$\Delta E_{\text{校正}} = \frac{\Delta E_{\text{組別 vs DPPH}}}{\Delta E_{\text{空白基準}}}$$
+                </div>
+
+                <h3 class="text-base font-semibold text-gray-800 mt-4 mb-2">3. DPPH 清除率 (%) 計算</h3>
+                <p class="text-sm text-gray-600 mb-1">以 $0.1 \text{ mg/mL}$ 維生素 C 組的校正 $\Delta E$ ($\Delta E_{\text{VitC, 校正}}$) 作為 $100\%$ 基準。</p>
+                <div class="formula-box">
+                    $$\text{DPPH 清除率}(\%) = \frac{\Delta E_{\text{樣品組, 校正}}}{\Delta E_{\text{VitC, 校正}}} \times 100\%$$
+                </div>
+            </div>
+        </section>
+        
+        <footer class="text-sm text-gray-400 mt-8 pt-4 border-t">
+            <p>分析方法：$\Delta E$ 色差值計算，以空白試紙平均值為校正基準（除法校正），並以 0.1 mg/mL 維生素C組作為 100% 清除率對照組。</p>
+        </footer>
+
+    </div>
+
+</body>
+</html>
